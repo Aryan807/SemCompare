@@ -1,0 +1,463 @@
+@page "/"
+@rendermode InteractiveServer
+@inject DiffService DiffService
+@inject GitHubService GitHubService
+@inject GitService GitService
+@inject AuthStateService AuthState
+@using SemCompare.Components
+@using SemCompare.Components.Layout
+@using SemCompare.Models
+@using SemCompare.Services
+
+<div class="page-header">
+    <h1>Semantic Analyser</h1>
+    <p>Select a repository, pick branches or commits, and see exactly what changed.</p>
+</div>
+
+@if (!reposLoaded)
+{
+    <div class="empty"><span class="spinner-dark"></span> Loading your repositories…</div>
+}
+else
+{
+    <!-- Step 1: Repo selector -->
+    <div class="card" style="margin-bottom:14px">
+        <div class="card-title">Repository</div>
+        <div class="repo-search-wrap">
+            <input @bind="repoFilter" @bind:event="oninput" placeholder="Filter repositories…" class="repo-search" />
+        </div>
+        <div class="repo-list">
+            @foreach (var r in FilteredRepos)
+            {
+                <div class="repo-item @(selectedRepo?.FullName == r.FullName ? "repo-item-selected" : "")"
+                     @onclick="() => SelectRepo(r)">
+                    <div class="repo-item-name">
+                        @if (r.IsPrivate)
+                        {
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity:.5;margin-right:4px">
+                                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                            </svg>
+                        }
+                        @r.FullName
+                    </div>
+                    @if (!string.IsNullOrEmpty(r.Description))
+                    {
+                        <div class="repo-item-desc">@r.Description</div>
+                    }
+                    <div class="repo-item-meta">
+                        @if (!string.IsNullOrEmpty(r.Language)) { <span class="badge badge-gray">@r.Language</span> }
+                        <span style="color:var(--muted);font-size:11px">Updated @r.UpdatedAt.ToString("dd MMM yyyy")</span>
+                    </div>
+                </div>
+            }
+            @if (!FilteredRepos.Any())
+            {
+                <div class="empty" style="padding:24px">No repositories match "@repoFilter"</div>
+            }
+        </div>
+    </div>
+
+    @if (selectedRepo != null)
+    {
+        <!-- Step 2: Branch + commit selectors -->
+        <div class="card" style="margin-bottom:14px">
+            <div class="card-title">Branches &amp; commits</div>
+
+            @if (loadingBranches)
+            {
+                <div style="padding:8px 0;color:var(--muted);font-size:13px"><span class="spinner-dark"></span> Loading branches…</div>
+            }
+            else
+            {
+                <div class="form-grid">
+                    <div class="field">
+                        <label>From branch</label>
+                        <select @bind="fromBranch" @bind:after="LoadFromCommits" class="select-input">
+                            @foreach (var b in branches)
+                            {
+                                <option value="@b">@b</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>To branch</label>
+                        <select @bind="toBranch" @bind:after="LoadToCommits" class="select-input">
+                            @foreach (var b in branches)
+                            {
+                                <option value="@b">@b</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="field"><!-- spacer --></div>
+                </div>
+
+                <div class="form-grid" style="margin-top:12px">
+                    <!-- From commit picker -->
+                    <div class="field">
+                        <label>From commit <span class="field-hint">(older)</span></label>
+                        <div class="commit-list">
+                            @foreach (var c in fromCommits)
+                            {
+                                <div class="commit-item @(fromRef == c.Sha ? "commit-selected" : "")"
+                                     @onclick="() => fromRef = c.Sha">
+                                    <span class="commit-sha">@c.ShortSha</span>
+                                    <span class="commit-msg">@c.Message</span>
+                                    <span class="commit-meta">@c.AuthorName · @c.Date.ToString("dd MMM")</span>
+                                </div>
+                            }
+                        </div>
+                        <div class="field" style="margin-top:6px">
+                            <label>Or type ref manually</label>
+                            <input @bind="fromRef" placeholder="SHA, branch, HEAD~1…" />
+                        </div>
+                    </div>
+
+                    <!-- To commit picker -->
+                    <div class="field">
+                        <label>To commit <span class="field-hint">(newer)</span></label>
+                        <div class="commit-list">
+                            @foreach (var c in toCommits)
+                            {
+                                <div class="commit-item @(toRef == c.Sha ? "commit-selected" : "")"
+                                     @onclick="() => toRef = c.Sha">
+                                    <span class="commit-sha">@c.ShortSha</span>
+                                    <span class="commit-msg">@c.Message</span>
+                                    <span class="commit-meta">@c.AuthorName · @c.Date.ToString("dd MMM")</span>
+                                </div>
+                            }
+                        </div>
+                        <div class="field" style="margin-top:6px">
+                            <label>Or type ref manually</label>
+                            <input @bind="toRef" placeholder="SHA, branch, HEAD…" />
+                        </div>
+                    </div>
+
+                    <div class="field" style="display:flex;align-items:flex-end">
+                        <button class="btn btn-primary" @onclick="RunDiff" disabled="@isLoading" style="width:100%">
+                            @if (isLoading)
+                            {
+                                <span class="spinner"></span><span>Analysing…</span>
+                            }
+                            else
+                            {
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+                                <span>Run analysis</span>
+                            }
+                        </button>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+}
+
+@if (errorMessage != null)
+{
+    <div class="alert alert-danger" style="margin-top:14px">
+        <span class="alert-icon">⚠</span>
+        <div><strong>Error</strong><p>@errorMessage</p></div>
+    </div>
+}
+
+@if (result != null)
+{
+    <!-- AI Summary -->
+    <div style="margin-top:20px">
+        @if (result.AiSummary != null)
+        {
+            <div class="alert alert-ai">
+                <span class="alert-icon">✦</span>
+                <div><strong>Gemini AI Summary</strong><p>@result.AiSummary</p></div>
+            </div>
+        }
+        else
+        {
+            <div class="alert alert-danger">
+                <span class="alert-icon">⚠</span>
+                <div><strong>AI Error</strong><p>Gemini summary generation failed (quota/key/model issue).</p></div>
+            </div>
+        }
+    </div>
+
+    <!-- Stats -->
+    <div class="stat-row" style="margin-top:16px">
+        <div class="stat"><div class="stat-val" style="color:var(--red)">@result.BreakingChanges.Count</div><div class="stat-lbl">Breaking changes</div></div>
+        <div class="stat"><div class="stat-val">@MethodChanges.Count</div><div class="stat-lbl">Method changes</div></div>
+        <div class="stat"><div class="stat-val">@FieldChanges.Count</div><div class="stat-lbl">Field changes</div></div>
+        <div class="stat"><div class="stat-val">@result.Methods.Count(r => r.Kind == ChangeKind.BodyModified)</div><div class="stat-lbl">Logic edits</div></div>
+        <div class="stat"><div class="stat-val">@result.Methods.Count(r => r.Kind == ChangeKind.Moved)</div><div class="stat-lbl">Moved</div></div>
+    </div>
+
+    <!-- Breaking changes -->
+    @if (result.BreakingChanges.Any())
+    {
+        @if (result.BreakingChanges.Any(b => string.IsNullOrWhiteSpace(b.AiExplanation)))
+        {
+            <div class="alert alert-danger">
+                <span class="alert-icon">⚠</span>
+                <div><strong>AI Error</strong><p>One or more breaking-change explanations could not be generated by Gemini.</p></div>
+            </div>
+        }
+
+        <div class="alert alert-danger">
+            <span class="alert-icon">⚠</span>
+            <div><strong>@result.BreakingChanges.Count Breaking Change(s)</strong><p>Public API contract changed. Callers may break.</p></div>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Kind</th><th>Class</th><th>Member</th><th>Before → After</th><th>AI Explanation</th></tr></thead>
+                <tbody>
+                    @foreach (var bc in result.BreakingChanges)
+                    {
+                        <tr class="removed">
+                            <td><span class="badge badge-red">@bc.MemberKind @bc.Kind</span></td>
+                            <td class="sig"><span class="type">@bc.ClassName</span></td>
+                            <td class="sig"><span class="name">@bc.MemberName</span></td>
+                            <td>
+                                @if (bc.BeforeSig != null) { <div class="sig removed-line" style="font-size:11px">− @bc.BeforeSig</div> }
+                                @if (bc.AfterSig  != null) { <div class="sig added-line"   style="font-size:11px">+ @bc.AfterSig</div>  }
+                                @if (bc.AfterSig  == null) { <span class="badge badge-red">Removed</span> }
+                                @if (bc.ParamDiffs?.Any() == true)
+                                {
+                                    <div class="param-diffs">
+                                        @foreach (var pd in bc.ParamDiffs)
+                                        {
+                                            <span class="badge @ParamDiffBadge(pd.Kind)">@pd.Kind: @pd.ParamName@(pd.OldType != null && pd.NewType != null ? $" ({pd.OldType}→{pd.NewType})" : "")</span>
+                                        }
+                                    </div>
+                                }
+                            </td>
+                            <td style="max-width:260px;font-size:12.5px;color:var(--muted)">
+                                @(bc.AiExplanation ?? "AI error: explanation unavailable (Gemini request failed).")
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    <!-- Method changes -->
+    @if (MethodChanges.Any())
+    {
+        <div class="section-heading">Method changes</div>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Change</th><th>Class</th><th>Before</th><th>After</th><th>Params</th></tr></thead>
+                <tbody>
+                    @foreach (var r in MethodChanges)
+                    {
+                        <tr class="@r.Kind.ToString().ToLower()">
+                            <td>@KindBadge(r.Kind)</td>
+                            <td class="sig"><span class="type">@r.ClassName</span></td>
+                            <td class="sig" style="font-size:12px">@(r.Before?.Display ?? "—")</td>
+                            <td class="sig" style="font-size:12px">
+                                @if (r.Kind == ChangeKind.Moved && r.After != null) { <span>→ <span class="type">@r.After.ClassName</span></span> }
+                                else { @(r.After?.Display ?? "—") }
+                            </td>
+                            <td>
+                                @if (r.ParamDiffs?.Any() == true)
+                                {
+                                    <div class="param-diffs">
+                                        @foreach (var pd in r.ParamDiffs)
+                                        {
+                                            <span class="badge @ParamDiffBadge(pd.Kind)" title="@pd.OldType → @pd.NewType">@pd.Kind: @pd.ParamName</span>
+                                        }
+                                    </div>
+                                }
+                                else { <span style="color:var(--muted)">—</span> }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    <!-- Field changes -->
+    @if (FieldChanges.Any())
+    {
+        <div class="section-heading">Field changes</div>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Change</th><th>Class</th><th>Field</th><th>Before</th><th>After</th><th>Breaking</th></tr></thead>
+                <tbody>
+                    @foreach (var f in FieldChanges)
+                    {
+                        <tr class="@f.Kind.ToString().ToLower()">
+                            <td>@KindBadge(f.Kind)</td>
+                            <td class="sig"><span class="type">@f.ClassName</span></td>
+                            <td class="sig"><span class="name">@f.FieldName</span></td>
+                            <td class="sig" style="font-size:12px">@(f.Before?.Display ?? "—")</td>
+                            <td class="sig" style="font-size:12px">@(f.After?.Display  ?? "—")</td>
+                            <td>@(f.IsBreaking ? @<span class="badge badge-red">Breaking</span> : null)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    @if (!MethodChanges.Any() && !FieldChanges.Any())
+    {
+        <div class="empty"><div style="font-size:32px;margin-bottom:8px">✓</div>No semantic changes detected.</div>
+    }
+}
+
+@code {
+    // State
+    string?  accessToken;
+    AppUser? currentUser;
+
+    List<GitHubRepoInfo>  repos        = new();
+    bool                  reposLoaded  = false;
+    string                repoFilter   = "";
+    GitHubRepoInfo?       selectedRepo;
+
+    List<string>          branches        = new();
+    bool                  loadingBranches = false;
+    string                fromBranch      = "";
+    string                toBranch        = "";
+
+    List<LocalCommitInfo> fromCommits = new();
+    List<LocalCommitInfo> toCommits   = new();
+    string                fromRef     = "";
+    string                toRef       = "";
+
+    bool           isLoading    = false;
+    string?        errorMessage;
+    DiffRunResult? result;
+
+    // Computed
+    List<DiffResult>      MethodChanges => result?.Methods.Where(r => r.Kind != ChangeKind.Unchanged).ToList() ?? new();
+    List<FieldDiffResult> FieldChanges  => result?.Fields.Where(r => r.Kind != ChangeKind.Unchanged).ToList() ?? new();
+
+    IEnumerable<GitHubRepoInfo> FilteredRepos =>
+        string.IsNullOrWhiteSpace(repoFilter)
+            ? repos
+            : repos.Where(r => r.FullName.Contains(repoFilter, StringComparison.OrdinalIgnoreCase)
+                             || r.Description.Contains(repoFilter, StringComparison.OrdinalIgnoreCase));
+
+    protected override async Task OnInitializedAsync()
+    {
+        accessToken = await AuthState.GetAccessTokenAsync();
+        currentUser = await AuthState.GetCurrentUserAsync();
+        if (accessToken != null)
+        {
+            repos = await GitHubService.GetAccessibleReposAsync(accessToken);
+        }
+        reposLoaded = true;
+    }
+
+    async Task SelectRepo(GitHubRepoInfo repo)
+    {
+        selectedRepo    = repo;
+        result          = null;
+        errorMessage    = null;
+        branches        = new();
+        fromCommits     = new();
+        toCommits       = new();
+        fromRef         = "";
+        toRef           = "";
+        loadingBranches = true;
+        StateHasChanged();
+
+        try
+        {
+            var parts   = repo.FullName.Split('/');
+            var ghBranches = await GitHubService.GetBranchesAsync(accessToken!, parts[0], parts[1]);
+            branches = ghBranches;
+
+            // Default: first branch from, first branch to
+            fromBranch = branches.FirstOrDefault(b => b is "main" or "master") ?? branches.FirstOrDefault() ?? "";
+            toBranch   = fromBranch;
+
+            await LoadFromCommits();
+            await LoadToCommits();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Could not load branches: {ex.Message}";
+        }
+        finally
+        {
+            loadingBranches = false;
+        }
+    }
+
+    async Task LoadFromCommits()
+    {
+        if (selectedRepo == null || string.IsNullOrEmpty(fromBranch)) return;
+        var parts = selectedRepo.FullName.Split('/');
+        fromCommits = (await GitHubService.GetCommitsAsync(accessToken!, parts[0], parts[1], fromBranch))
+            .Select(c => new LocalCommitInfo(c.Sha, c.ShortSha, c.Message, c.AuthorName, c.Date))
+            .ToList();
+        // Default from = second commit (HEAD~1 equivalent)
+        fromRef = fromCommits.Count > 1 ? fromCommits[1].Sha : fromCommits.FirstOrDefault()?.Sha ?? "";
+    }
+
+    async Task LoadToCommits()
+    {
+        if (selectedRepo == null || string.IsNullOrEmpty(toBranch)) return;
+        var parts = selectedRepo.FullName.Split('/');
+        toCommits = (await GitHubService.GetCommitsAsync(accessToken!, parts[0], parts[1], toBranch))
+            .Select(c => new LocalCommitInfo(c.Sha, c.ShortSha, c.Message, c.AuthorName, c.Date))
+            .ToList();
+        // Default to = HEAD (first commit in list)
+        toRef = toCommits.FirstOrDefault()?.Sha ?? "";
+    }
+
+    async Task RunDiff()
+    {
+        if (selectedRepo == null) { errorMessage = "Select a repository first."; return; }
+        if (string.IsNullOrWhiteSpace(fromRef) || string.IsNullOrWhiteSpace(toRef))
+        {
+            errorMessage = "Select both a From and To commit.";
+            return;
+        }
+
+        isLoading    = true;
+        errorMessage = null;
+        result       = null;
+
+        try
+        {
+            result = await DiffService.RunDiffFromGitHubAsync(
+                selectedRepo.CloneUrl,
+                selectedRepo.FullName,
+                fromRef, toRef,
+                accessToken!,
+                currentUser?.Id);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    static RenderFragment KindBadge(ChangeKind kind) => kind switch
+    {
+        ChangeKind.Added              => @<span class="badge badge-green">Added</span>,
+        ChangeKind.Removed            => @<span class="badge badge-red">Removed</span>,
+        ChangeKind.Renamed            => @<span class="badge badge-blue">Renamed</span>,
+        ChangeKind.Moved              => @<span class="badge badge-purple">Moved</span>,
+        ChangeKind.SignatureChanged    => @<span class="badge badge-amber">Signature ↑</span>,
+        ChangeKind.BodyModified       => @<span class="badge badge-teal">Logic edit</span>,
+        ChangeKind.TypeChanged         => @<span class="badge badge-red">Type ↑</span>,
+        ChangeKind.InitializerChanged  => @<span class="badge badge-amber">Init ↑</span>,
+        _                             => @<span class="badge badge-gray">@kind</span>
+    };
+
+    static string ParamDiffBadge(string kind) => kind switch
+    {
+        "Added"       => "badge-green",
+        "Removed"     => "badge-red",
+        "TypeChanged" => "badge-amber",
+        _             => "badge-gray"
+    };
+}

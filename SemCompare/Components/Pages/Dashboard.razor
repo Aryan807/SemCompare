@@ -1,0 +1,107 @@
+@page "/dashboard"
+@rendermode InteractiveServer
+@inject DiffService DiffService
+@inject AuthStateService AuthState
+@using SemCompare.Components
+@using SemCompare.Components.Layout
+@using SemCompare.Models
+@using SemCompare.Services
+
+<div class="page-header">
+    <h1>Code Churn Dashboard</h1>
+    <p>Methods and fields that change most frequently across all your runs.</p>
+</div>
+
+@if (churn == null)
+{
+    <div class="empty"><span class="spinner-dark"></span> Loading…</div>
+}
+else
+{
+    <div class="section-heading">Change type breakdown</div>
+    <div class="stat-row">
+        @foreach (var kv in breakdown!)
+        {
+            <div class="stat">
+                <div class="stat-val">@kv.Value</div>
+                <div class="stat-lbl">@kv.Key</div>
+            </div>
+        }
+    </div>
+
+    <div class="section-heading">Most changed methods</div>
+    @if (!churn.Any())
+    {
+        <div class="empty">No data yet — run some diffs first.</div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>#</th><th>Class</th><th>Method</th><th>Changes</th></tr></thead>
+                <tbody>
+                    @{ int rank = 1; }
+                    @foreach (var row in churn)
+                    {
+                        <tr>
+                            <td style="color:var(--muted);width:36px">@rank</td>
+                            <td class="sig"><span class="type">@row.ClassName</span></td>
+                            <td class="sig"><span class="name">@row.MethodName</span></td>
+                            <td><span class="badge @ChurnBadge(row.ChangeCount)">@row.ChangeCount</span></td>
+                        </tr>
+                        rank++;
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    <div class="section-heading">Most changed fields</div>
+    @if (!fieldChurn!.Any())
+    {
+        <div class="empty">No field data yet.</div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>#</th><th>Class</th><th>Field</th><th>Changes</th></tr></thead>
+                <tbody>
+                    @{ int fr = 1; }
+                    @foreach (var row in fieldChurn)
+                    {
+                        <tr>
+                            <td style="color:var(--muted);width:36px">@fr</td>
+                            <td class="sig"><span class="type">@row.ClassName</span></td>
+                            <td class="sig"><span class="name">@row.FieldName</span></td>
+                            <td><span class="badge @ChurnBadge(row.ChangeCount)">@row.ChangeCount</span></td>
+                        </tr>
+                        fr++;
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+}
+
+@code {
+    List<ChurnRow>?         churn;
+    List<FieldChurnRow>?    fieldChurn;
+    Dictionary<string,int>? breakdown;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var user   = await AuthState.GetCurrentUserAsync();
+        churn      = await DiffService.GetTopChurnAsync(user?.Id);
+        fieldChurn = await DiffService.GetTopFieldChurnAsync(user?.Id);
+        breakdown  = await DiffService.GetChangeBreakdownAsync(user?.Id);
+    }
+
+    static string ChurnBadge(int count) => count switch
+    {
+        >= 10 => "badge-red",
+        >= 5  => "badge-amber",
+        >= 2  => "badge-blue",
+        _     => "badge-gray"
+    };
+}

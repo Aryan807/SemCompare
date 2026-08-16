@@ -1,0 +1,145 @@
+@page "/history"
+@rendermode InteractiveServer
+@inject DiffService DiffService
+@inject AuthStateService AuthState
+@using SemCompare.Components
+@using SemCompare.Components.Layout
+@using SemCompare.Models
+@using SemCompare.Services
+
+<div class="page-header">
+    <h1>Run History</h1>
+    <p>All previous diff runs, newest first.</p>
+</div>
+
+@if (runs == null)
+{
+    <div class="empty"><span class="spinner-dark"></span> Loading…</div>
+}
+else if (!runs.Any())
+{
+    <div class="empty">
+        <div style="font-size:32px;margin-bottom:8px">📂</div>
+        No runs yet — go to the Analyser to run your first diff.
+    </div>
+}
+else
+{
+    @foreach (var run in runs)
+    {
+        <div class="run-card">
+            <div class="run-card-header">
+                <div>
+                    <div class="run-card-meta">
+                        <strong>@(run.Repository.FullName.Length > 0 ? run.Repository.FullName : run.Repository.Path)</strong>
+                    </div>
+                    <div class="run-card-meta" style="margin-top:4px">
+                        <span class="badge badge-gray">@TrimSha(run.CommitFrom)</span>
+                        <span style="margin:0 6px;color:var(--muted)">→</span>
+                        <span class="badge badge-blue">@TrimSha(run.CommitTo)</span>
+                        <span style="margin-left:10px;font-size:12px;color:var(--muted)">@run.RanAt.ToString("dd MMM yyyy, HH:mm") UTC</span>
+                    </div>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center">
+                    @if (run.Changes.Any(c => c.IsBreaking) || run.FieldChanges.Any(f => f.IsBreaking))
+                    {
+                        <span class="badge badge-red">⚠ Breaking</span>
+                    }
+                    <span class="badge badge-gray">@(run.Changes.Count + run.FieldChanges.Count) changes</span>
+                </div>
+            </div>
+
+            <div class="run-card-body">
+                @if (run.AiSummary != null)
+                {
+                    <div class="alert alert-ai" style="margin-bottom:14px">
+                        <span class="alert-icon">✦</span>
+                        <div><strong>Gemini Summary</strong><p>@run.AiSummary</p></div>
+                    </div>
+                }
+                else
+                {
+                    <div class="alert alert-danger" style="margin-bottom:14px">
+                        <span class="alert-icon">⚠</span>
+                        <div><strong>AI Error</strong><p>Gemini summary was unavailable for this run.</p></div>
+                    </div>
+                }
+
+                @if (run.Changes.Any())
+                {
+                    <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Methods</div>
+                    <div class="table-wrap" style="margin-bottom:14px">
+                        <table>
+                            <thead><tr><th>Kind</th><th>Class</th><th>Method</th><th>Before</th><th>After</th><th>Breaking</th><th>AI Note</th></tr></thead>
+                            <tbody>
+                                @foreach (var c in run.Changes)
+                                {
+                                    <tr class="@c.ChangeKind.ToLower()">
+                                        <td><span class="badge @KindBadgeClass(c.ChangeKind)">@c.ChangeKind</span></td>
+                                        <td class="sig"><span class="type">@c.ClassName</span></td>
+                                        <td class="sig"><span class="name">@c.MethodName</span></td>
+                                        <td class="sig" style="font-size:11px">@(c.BeforeSig ?? "—")</td>
+                                        <td class="sig" style="font-size:11px">@(c.AfterSig  ?? "—")</td>
+                                        <td>@(c.IsBreaking ? @<span class="badge badge-red">Yes</span> : null)</td>
+                                        <td style="font-size:12px;color:var(--muted);max-width:200px">
+                                            @(c.AiExplanation ?? "AI error: explanation unavailable (Gemini request failed).")
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+
+                @if (run.FieldChanges.Any())
+                {
+                    <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Fields</div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead><tr><th>Kind</th><th>Class</th><th>Field</th><th>Before</th><th>After</th><th>Breaking</th></tr></thead>
+                            <tbody>
+                                @foreach (var f in run.FieldChanges)
+                                {
+                                    <tr class="@f.ChangeKind.ToLower()">
+                                        <td><span class="badge @KindBadgeClass(f.ChangeKind)">@f.ChangeKind</span></td>
+                                        <td class="sig"><span class="type">@f.ClassName</span></td>
+                                        <td class="sig"><span class="name">@f.FieldName</span></td>
+                                        <td class="sig" style="font-size:11px">@(f.BeforeSig ?? "—")</td>
+                                        <td class="sig" style="font-size:11px">@(f.AfterSig  ?? "—")</td>
+                                        <td>@(f.IsBreaking ? @<span class="badge badge-red">Yes</span> : null)</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+}
+
+@code {
+    List<DiffRun>? runs;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var user = await AuthState.GetCurrentUserAsync();
+        runs = await DiffService.GetAllRunsAsync(user?.Id);
+    }
+
+    static string TrimSha(string sha) =>
+        sha.Length > 7 ? sha[..7] : sha;
+
+    static string KindBadgeClass(string kind) => kind.ToLower() switch
+    {
+        "added"              => "badge-green",
+        "removed"            => "badge-red",
+        "renamed"            => "badge-blue",
+        "moved"              => "badge-purple",
+        "signaturechanged"   => "badge-amber",
+        "bodymodified"       => "badge-teal",
+        "typechanged"        => "badge-red",
+        "initializerchanged" => "badge-amber",
+        _                    => "badge-gray"
+    };
+}
